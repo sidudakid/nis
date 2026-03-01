@@ -1,0 +1,3 @@
+/home/sidudakid/projects/nis/build/CMakeFiles/nis.dir
+/home/sidudakid/projects/nis/build/CMakeFiles/edit_cache.dir
+/home/sidudakid/projects/nis/build/CMakeFiles/rebuild_cache.dir

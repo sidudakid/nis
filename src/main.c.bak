@@ -1,0 +1,225 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// ----------------- Tokens -----------------
+typedef enum {
+    TOKEN_IDENTIFIER,
+    TOKEN_NUMBER,
+    TOKEN_INT,
+    TOKEN_PLUS,
+    TOKEN_ASSIGN,
+    TOKEN_SEMICOLON,
+    TOKEN_EOF
+} TokenType;
+
+typedef struct {
+    TokenType type;
+    char *lexeme;
+    int line;
+    int column;
+} Token;
+
+// ----------------- Lexer -----------------
+typedef struct {
+    const char *src;
+    int pos;
+    int line;
+    int column;
+} Lexer;
+
+char peek(Lexer *lexer) {
+    return lexer->src[lexer->pos];
+}
+
+char advance(Lexer *lexer) {
+    char c = lexer->src[lexer->pos++];
+    if (c == '\n') { lexer->line++; lexer->column = 1; }
+    else lexer->column++;
+    return c;
+}
+
+int isAtEnd(Lexer *lexer) { return lexer->src[lexer->pos] == '\0'; }
+int isDigit(char c) { return c >= '0' && c <= '9'; }
+int isAlpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+int isAlphaNum(char c) { return isAlpha(c) || isDigit(c); }
+
+Token makeToken(TokenType type, const char *start, int length, int line, int column) {
+    Token t;
+    t.type = type;
+    t.lexeme = malloc(length + 1);
+    strncpy(t.lexeme, start, length);
+    t.lexeme[length] = '\0';
+    t.line = line;
+    t.column = column;
+    return t;
+}
+
+void skipWhitespace(Lexer *lexer) {
+    while (!isAtEnd(lexer)) {
+        char c = peek(lexer);
+        if (c==' '||c=='\t'||c=='\r') advance(lexer);
+        else if(c=='\n') advance(lexer);
+        else break;
+    }
+}
+
+Token number(Lexer *lexer) {
+    int start = lexer->pos - 1;
+    int line = lexer->line, column = lexer->column - 1;
+    while(isDigit(peek(lexer))) advance(lexer);
+    return makeToken(TOKEN_NUMBER, lexer->src + start, lexer->pos - start, line, column);
+}
+
+Token identifier(Lexer *lexer) {
+    int start = lexer->pos - 1;
+    int line = lexer->line, column = lexer->column - 1;
+    while(isAlphaNum(peek(lexer))) advance(lexer);
+    int length = lexer->pos - start;
+    char *text = strndup(lexer->src + start, length);
+    TokenType type = TOKEN_IDENTIFIER;
+    if(strcmp(text,"int")==0) type = TOKEN_INT;
+    free(text);
+    return makeToken(type, lexer->src + start, length, line, column);
+}
+
+// ----------------- Token Vector -----------------
+typedef struct {
+    Token *data;
+    int size;
+    int capacity;
+} TokenVector;
+
+void initVector(TokenVector *vec) { vec->size=0; vec->capacity=8; vec->data=malloc(sizeof(Token)*vec->capacity); }
+void pushVector(TokenVector *vec, Token t) {
+    if(vec->size==vec->capacity) { vec->capacity*=2; vec->data=realloc(vec->data,sizeof(Token)*vec->capacity); }
+    vec->data[vec->size++] = t;
+}
+void freeVector(TokenVector *vec) { for(int i=0;i<vec->size;i++) free(vec->data[i].lexeme); free(vec->data); }
+
+// ----------------- Lexer Core -----------------
+void lexSource(Lexer *lexer, TokenVector *tokens) {
+    while(!isAtEnd(lexer)) {
+        skipWhitespace(lexer);
+        if(isAtEnd(lexer)) break;
+        char c = advance(lexer);
+        Token t;
+        if(isAlpha(c)) t = identifier(lexer);
+        else if(isDigit(c)) t = number(lexer);
+        else {
+            int line=lexer->line, col=lexer->column-1;
+            switch(c){
+                case '+': t=makeToken(TOKEN_PLUS,"+",1,line,col); break;
+                case '=': t=makeToken(TOKEN_ASSIGN,"=",1,line,col); break;
+                case ';': t=makeToken(TOKEN_SEMICOLON,";",1,line,col); break;
+                default: { char tmp[2]={c,'\0'}; t=makeToken(TOKEN_IDENTIFIER,tmp,1,line,col); }
+            }
+        }
+        pushVector(tokens,t);
+    }
+    pushVector(tokens, makeToken(TOKEN_EOF,"",0,lexer->line,lexer->column));
+}
+
+// ----------------- Variables -----------------
+typedef struct {
+    char *name;
+} Variable;
+
+typedef struct {
+    Variable *data;
+    int size;
+    int capacity;
+} VarTable;
+
+void initVarTable(VarTable *table) { table->size=0; table->capacity=8; table->data=malloc(sizeof(Variable)*table->capacity); }
+void pushVarTable(VarTable *table, Variable var) {
+    if(table->size==table->capacity){ table->capacity*=2; table->data=realloc(table->data,sizeof(Variable)*table->capacity); }
+    table->data[table->size++] = var;
+}
+Variable* findVar(VarTable *table,const char*name){ for(int i=0;i<table->size;i++) if(strcmp(table->data[i].name,name)==0) return &table->data[i]; return NULL; }
+
+// ----------------- Parser & Code Generator -----------------
+void parseVarDeclaration(TokenVector *tokens,int *pos,VarTable *vars){
+    (*pos)++; // skip 'int'
+    Token varName = tokens->data[(*pos)++];
+    (*pos)++; // skip '='
+
+    printf("%s: dq 0\n",varName.lexeme); // declare variable in .data
+
+    // first operand
+    Token first = tokens->data[(*pos)++];
+    if(first.type==TOKEN_NUMBER) printf("mov rax, %s\n",first.lexeme);
+    else {
+        Variable *v = findVar(vars,first.lexeme);
+        printf("mov rax, [%s]\n",v->name);
+    }
+
+    // optional '+'
+    if(tokens->data[*pos].type==TOKEN_PLUS){
+        (*pos)++;
+        Token second = tokens->data[(*pos)++];
+        if(second.type==TOKEN_NUMBER) printf("add rax, %s\n",second.lexeme);
+        else { Variable *v=findVar(vars,second.lexeme); printf("add rax, [%s]\n",v->name);}
+    }
+
+    (*pos)++; // skip ';'
+
+    Variable v;
+    v.name=strdup(varName.lexeme);
+    pushVarTable(vars,v);
+
+    printf("mov [%s], rax\n\n",varName.lexeme);
+}
+
+void generateAssembly(TokenVector *tokens){
+    printf("section .data\n");
+    VarTable vars;
+    initVarTable(&vars);
+
+    int pos=0;
+    // declare variables first
+    while(tokens->data[pos].type!=TOKEN_EOF){
+        if(tokens->data[pos].type==TOKEN_INT) parseVarDeclaration(tokens,&pos,&vars);
+        else pos++;
+    }
+
+    // text section
+    printf("section .text\nglobal _start\n_start:\n");
+    printf("    ; assignments already printed above\n");
+    printf("    mov rax, 60\n    xor rdi, rdi\n    syscall\n");
+}
+
+// ----------------- Main -----------------
+int main(int argc,char*argv[]){
+    if(argc!=2){ printf("Usage: nis <file>\n"); return 1; }
+
+    FILE *f=fopen(argv[1],"r");
+    if(!f){ printf("Cannot open file\n"); return 1; }
+
+    fseek(f,0,SEEK_END);
+    long size=ftell(f);
+    rewind(f);
+
+    char *source=malloc(size+1);
+    fread(source,1,size,f);
+    source[size]='\0';
+    fclose(f);
+
+    Lexer lexer={source,0,1,1};
+    TokenVector tokens;
+    initVector(&tokens);
+    lexSource(&lexer,&tokens);
+
+    // Print tokens (optional)
+    /*
+    for(int i=0;i<tokens.size;i++){
+        printf("%d: '%s'\n",tokens.data[i].type,tokens.data[i].lexeme);
+    }
+    */
+
+    generateAssembly(&tokens);
+
+    freeVector(&tokens);
+    free(source);
+    return 0;
+}
